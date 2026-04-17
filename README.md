@@ -13,7 +13,8 @@ Pre-work brief: [`CLAUDE_CODE_BRIEF.md`](CLAUDE_CODE_BRIEF.md).
 |---|---|
 | Pre-processing pipeline (scripts 01–07) | **Done** |
 | Final GeoJSON + flat lookup | **Done**, in `data/output/` |
-| Frontend (MapLibre choropleth, profile panel, compare, Claude Q&A) | TBD — Saturday build |
+| Frontend prototype (MapLibre choropleth + click-to-open profile panel) | **Done** — `frontend/`, see [`HACKATHON.md`](HACKATHON.md) |
+| Compare mode, Claude Q&A, layer toggles | TBD — Saturday build |
 
 ## What's in the repo
 

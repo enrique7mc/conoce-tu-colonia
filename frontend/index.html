@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Conoce tu Colonia — CDMX</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%237cc4ff'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle' font-family='system-ui' font-weight='700' fill='%23081018'%3EC%3C/text%3E%3C/svg%3E" />
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">CDMX</span>
+      <span class="brand-name">Conoce tu Colonia</span>
+    </div>
+    <div class="controls">
+      <label>
+        <span>Colorear por</span>
+        <select id="score-select">
+          <option value="score_overall" selected>Score general</option>
+          <option value="score_safety">Seguridad</option>
+          <option value="score_transit">Transporte</option>
+          <option value="score_urban">Servicios urbanos</option>
+          <option value="score_development">Desarrollo social (IDS)</option>
+        </select>
+      </label>
+      <label class="search">
+        <span>Buscar</span>
+        <input id="search-input" type="search" placeholder="Roma Norte, Tepito, Polanco…" autocomplete="off" />
+      </label>
+    </div>
+    <div class="meta">
+      <span id="colonia-count"></span>
+    </div>
+  </header>
+
+  <main>
+    <div id="map"></div>
+
+    <aside id="panel" class="panel panel--empty">
+      <div class="panel-empty">
+        <h2>Haz clic en una colonia</h2>
+        <p>Cada polígono contiene ~70 indicadores de seguridad, transporte, servicios, peatonalidad y desarrollo social, cruzados de 15+ datasets de datos.cdmx.gob.mx.</p>
+        <p class="muted">Los scores son 0–100 (mayor es mejor). El score general pondera seguridad 35%, transporte 25%, servicios 25%, IDS 15%.</p>
+      </div>
+    </aside>
+
+    <div class="legend" id="legend">
+      <div class="legend-title">Score</div>
+      <div class="legend-bar"></div>
+      <div class="legend-labels"><span>bajo</span><span>alto</span></div>
+      <div class="legend-null"><span class="chip chip--null"></span> sin datos</div>
+    </div>
+
+    <div class="tooltip" id="tooltip" aria-hidden="true"></div>
+
+    <div class="search-results" id="search-results" hidden></div>
+  </main>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="./app.js" type="module"></script>
+</body>
+</html>
