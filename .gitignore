@@ -1,0 +1,24 @@
+# Raw datasets (2.7 GB) — regenerate via scripts/01_download.py
+data/raw/
+
+# Intermediate tables — regenerate via scripts/02-07
+data/processed/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Local settings that shouldn't leak
+.env
+.env.*
+!.env.example
