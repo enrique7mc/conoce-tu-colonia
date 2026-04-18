@@ -64,6 +64,18 @@ html, body {
 .controls select:focus, .controls input:focus { border-color: var(--accent); }
 .controls .search input { min-width: 240px; }
 
+.afford-row { display: flex; align-items: center; gap: 8px; }
+.afford-row input[type="range"] {
+  width: 160px;
+  accent-color: var(--accent);
+}
+.afford-row output {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--text);
+  min-width: 72px;
+}
+
 .meta { margin-left: auto; color: var(--muted); font-size: 12px; }
 
 main {

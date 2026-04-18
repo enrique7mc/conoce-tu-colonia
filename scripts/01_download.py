@@ -110,6 +110,10 @@ MANIFEST: list[Dataset] = [
     Dataset(key="espacios_publicos", category="urban",
             search="espacios publicos colonia",
             formats=("GEOJSON", "CSV", "SHP", "ZIP")),
+    Dataset(key="valores_suelo", category="urban",
+            slug="valores-unitarios-del-suelo-habitacional-habitacional-comercial-en-pesos-valor-promedio",
+            formats=("SHP", "ZIP", "CSV"),
+            notes="Código Fiscal CDMX zones with avg MXN/m² (5 tiers: Muy bajo..Muy alto) — affordability proxy"),
 
     # --- SOCIAL DEVELOPMENT ---
     Dataset(key="ids_2020", category="social",

@@ -18,7 +18,11 @@ const SCORE_LABELS = {
   score_transit: "Transporte",
   score_urban: "Servicios urbanos",
   score_development: "Desarrollo social",
+  score_affordability: "Asequibilidad",
 };
+
+// Highest $/m² in the cadastral map (Muy alto midpoint). Slider caps here.
+const AFFORD_MAX = 12000;
 
 // ---- Map setup ------------------------------------------------------------
 
@@ -67,6 +71,7 @@ map.addControl(new maplibregl.ScaleControl({ maxWidth: 100, unit: "metric" }), "
 
 let FEATURES = [];
 let currentScoreKey = "score_overall";
+let affordCap = AFFORD_MAX; // MXN/m², "sin tope" at the max
 let hoveredId = null;
 let selectedId = null;
 
@@ -83,6 +88,28 @@ function colorExpressionFor(scoreKey) {
       ["to-number", ["get", scoreKey]],
       ...SCORE_STOPS.flatMap((s) => [s.v, s.c]),
     ],
+  ];
+}
+
+// Dim colonias whose land value exceeds the affordability cap.
+// "Sin tope" (slider at max) disables the filter — all colonias visible.
+// Colonias with no land_value_mxn_per_m2 data pass through (don't penalize
+// missing data).
+function opacityExpression() {
+  const dim = affordCap < AFFORD_MAX;
+  const normal = [
+    "case",
+    ["boolean", ["feature-state", "selected"], false], 0.92,
+    ["boolean", ["feature-state", "hover"], false], 0.85,
+    0.65,
+  ];
+  if (!dim) return normal;
+  return [
+    "case",
+    ["==", ["get", "land_value_mxn_per_m2"], null], normal,
+    ["!", ["has", "land_value_mxn_per_m2"]], normal,
+    [">", ["to-number", ["get", "land_value_mxn_per_m2"]], affordCap], 0.08,
+    normal,
   ];
 }
 
@@ -110,7 +137,7 @@ map.on("load", async () => {
   FEATURES = data.features;
 
   document.getElementById("colonia-count").textContent =
-    `${FEATURES.length.toLocaleString("es-MX")} colonias · 73 indicadores`;
+    `${FEATURES.length.toLocaleString("es-MX")} colonias · 76 indicadores`;
 
   map.addSource("colonias", {
     type: "geojson",
@@ -124,12 +151,7 @@ map.on("load", async () => {
     source: "colonias",
     paint: {
       "fill-color": colorExpressionFor(currentScoreKey),
-      "fill-opacity": [
-        "case",
-        ["boolean", ["feature-state", "selected"], false], 0.92,
-        ["boolean", ["feature-state", "hover"], false], 0.85,
-        0.65,
-      ],
+      "fill-opacity": opacityExpression(),
     },
   });
 
@@ -204,6 +226,19 @@ function wireInteractions() {
   document.getElementById("score-select").addEventListener("change", (e) => {
     currentScoreKey = e.target.value;
     map.setPaintProperty("colonias-fill", "fill-color", colorExpressionFor(currentScoreKey));
+  });
+
+  // Affordability filter — dims colonias above the MXN/m² cap.
+  const affordRange = document.getElementById("afford-range");
+  const affordValue = document.getElementById("afford-value");
+  affordRange.addEventListener("input", (e) => {
+    const v = Number(e.target.value);
+    affordCap = v;
+    affordValue.textContent =
+      v >= AFFORD_MAX
+        ? "sin tope"
+        : `≤ ${v.toLocaleString("es-MX")} $/m²`;
+    map.setPaintProperty("colonias-fill", "fill-opacity", opacityExpression());
   });
 
   // Search
@@ -297,7 +332,9 @@ function panelHtml(p) {
         ${barRow("Transporte", p.score_transit)}
         ${barRow("Servicios urbanos", p.score_urban)}
         ${barRow("Desarrollo (IDS)", p.score_development)}
+        ${barRow("Asequibilidad", p.score_affordability)}
       </div>
+      ${affordabilityRow(p)}
     </section>
 
     <section class="section">
@@ -402,6 +439,24 @@ function barRow(name, score) {
     <div class="name">${name}</div>
     <div class="track"><div class="fill" style="width:${clamp(score, 0, 100)}%;background:${color}"></div></div>
     <div class="val">${fmtScore(score)}</div>
+  </div>`;
+}
+
+function affordabilityRow(p) {
+  const v = p.land_value_mxn_per_m2;
+  if (v === null || v === undefined || Number.isNaN(v)) {
+    return `<p class="footer-note" style="margin-top:8px">
+      Valor de suelo: sin datos (fuera del mapa catastral urbano).
+    </p>`;
+  }
+  const tier = p.land_value_tier ? ` · ${escapeHtml(p.land_value_tier)}` : "";
+  const cov = p.land_value_coverage_pct;
+  const covNote = cov !== null && cov !== undefined && cov < 95
+    ? ` <span class="muted">(cobertura ${fmtNum(cov, 0)}%)</span>`
+    : "";
+  return `<div class="kv" style="margin-top:8px">
+    <div class="k">Valor de suelo (Código Fiscal)</div>
+    <div class="v">$${fmtNum(v)} / m²${tier}${covNote}</div>
   </div>`;
 }
 

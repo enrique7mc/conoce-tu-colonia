@@ -9,6 +9,7 @@ Inputs
     data/processed/traffic_by_colonia.csv
     data/processed/transit_by_colonia.csv
     data/processed/tabular_by_colonia.csv
+    data/processed/affordability_by_colonia.csv  (optional — MXN/m² land value)
 
 Outputs
 -------
@@ -49,6 +50,14 @@ All sub-scores are 0-100 where higher = better.
 
 * development_score
     IDS 2020 alcaldía-proxy, rescaled to 0-100.
+
+* affordability_score
+    Percentile-rank of land_value_mxn_per_m2 (Valores Unitarios del Suelo,
+    Código Fiscal CDMX), inverted so cheap land -> high score.  Colonias
+    outside the zonal cadastral map (mostly rural fringe) are NaN and the
+    UI should surface "sin datos" rather than treat them as affordable.
+    Deliberately NOT mixed into score_overall — affordability is good for
+    renters, bad for owners; exposed as a standalone dimension + filter.
 
 * score_overall = 0.35*safety + 0.25*transit + 0.25*urban + 0.15*development
 
@@ -129,6 +138,16 @@ def development_score(ids_score: pd.Series) -> pd.Series:
     return ((ids_score - lo) / (hi - lo) * 100).round(1)
 
 
+def affordability_score(mxn_per_m2: pd.Series) -> pd.Series:
+    """Inverted percentile rank so cheap land -> high score.
+
+    NaN in -> NaN out: colonias outside the zonal map shouldn't be ranked
+    as "infinitely affordable" when we simply lack data.
+    """
+    ranks = mxn_per_m2.rank(pct=True, method="average")
+    return ((1 - ranks) * 100).round(1)
+
+
 def main() -> int:
     print("loading ...")
     base = gpd.read_file(PROCESSED / "colonias_base.geojson")
@@ -136,11 +155,17 @@ def main() -> int:
     traffic = pd.read_csv(PROCESSED / "traffic_by_colonia.csv")
     transit = pd.read_csv(PROCESSED / "transit_by_colonia.csv")
     tabular = pd.read_csv(PROCESSED / "tabular_by_colonia.csv")
+    afford_path = PROCESSED / "affordability_by_colonia.csv"
+    afford = pd.read_csv(afford_path) if afford_path.exists() else None
     print(f"  spine   : {len(base)} colonias, area total {base['area_m2'].sum()/1e6:.1f} km²")
+    if afford is None:
+        print("  !! affordability_by_colonia.csv missing — score_affordability will be NaN")
 
     # Drop redundant identifier columns from each feature table.
-    for df, keep_name in [(crime, "crime"), (traffic, "traffic"),
-                           (transit, "transit"), (tabular, "tabular")]:
+    feature_tables = [crime, traffic, transit, tabular]
+    if afford is not None:
+        feature_tables.append(afford)
+    for df in feature_tables:
         drop = [c for c in ("colonia_name", "alcaldia_name", "alcaldia_id")
                 if c in df.columns]
         df.drop(columns=drop, inplace=True)
@@ -153,6 +178,12 @@ def main() -> int:
         .merge(transit, on="colonia_id", how="left")
         .merge(tabular, on="colonia_id", how="left")
     )
+    if afford is not None:
+        full = full.merge(afford, on="colonia_id", how="left")
+    else:
+        full["land_value_mxn_per_m2"] = np.nan
+        full["land_value_tier"] = None
+        full["land_value_coverage_pct"] = 0.0
     print(f"  merged  : {len(full)} rows, {len(full.columns)} columns")
 
     # --- scores ---
@@ -165,6 +196,7 @@ def main() -> int:
     full["score_transit"] = transit_score(full)
     full["score_urban"] = urban_score(full)
     full["score_development"] = development_score(full["ids_score"])
+    full["score_affordability"] = affordability_score(full["land_value_mxn_per_m2"])
 
     full["score_overall"] = (
         0.35 * full["score_safety"].fillna(50)
@@ -191,7 +223,7 @@ def main() -> int:
     print(f"final file: {OUT_GEOJSON.stat().st_size/1e6:.1f} MB")
     print(f"flat lookup: {OUT_LOOKUP.stat().st_size/1e6:.1f} MB")
     for c in ("score_safety", "score_transit", "score_urban",
-              "score_development", "score_overall"):
+              "score_development", "score_affordability", "score_overall"):
         s = full[c]
         print(f"  {c:22s} min={s.min():.1f}  mean={s.mean():.1f}  "
               f"max={s.max():.1f}  nulls={s.isna().sum()}")
@@ -221,6 +253,7 @@ def main() -> int:
         ("Centro", "Cuauhtémoc"),
         ("Doctores", "Cuauhtémoc"),
         ("Santa Fe", "Álvaro Obregón"),
+        ("Iztapalapa", "Iztapalapa"),
     ]
     rows = []
     for cname, aname in watch:
@@ -230,7 +263,9 @@ def main() -> int:
     if rows:
         spot = pd.DataFrame(rows)[[
             "colonia_name", "alcaldia_name", "score_overall",
-            "score_safety", "score_transit", "score_urban", "score_development"
+            "score_safety", "score_transit", "score_urban",
+            "score_development", "score_affordability",
+            "land_value_mxn_per_m2", "land_value_tier",
         ]]
         print(spot.to_string(index=False))
 

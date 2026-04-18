@@ -23,7 +23,15 @@
           <option value="score_transit">Transporte</option>
           <option value="score_urban">Servicios urbanos</option>
           <option value="score_development">Desarrollo social (IDS)</option>
+          <option value="score_affordability">Asequibilidad (suelo)</option>
         </select>
+      </label>
+      <label class="afford-filter" title="Oculta colonias cuyo valor de suelo es mayor al tope elegido">
+        <span>Filtro asequibilidad</span>
+        <div class="afford-row">
+          <input id="afford-range" type="range" min="0" max="12000" step="500" value="12000" />
+          <output id="afford-value">sin tope</output>
+        </div>
       </label>
       <label class="search">
         <span>Buscar</span>
