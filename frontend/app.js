@@ -454,7 +454,7 @@ function affordabilityRow(p) {
       : "";
     rows.push(`
       <div class="k">Valor de suelo (Código Fiscal)</div>
-      <div class="v">$${fmtNum(v)} / m²${tier}${covNote}</div>
+      <div class="v">$${fmtNum(v)} MXN / m²${tier}${covNote}</div>
     `);
   } else {
     rows.push(`

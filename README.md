@@ -11,7 +11,8 @@ Pre-work brief: [`CLAUDE_CODE_BRIEF.md`](CLAUDE_CODE_BRIEF.md).
 
 | Stage | State |
 |---|---|
-| Pre-processing pipeline (scripts 01–07) | **Done** |
+| Pre-processing pipeline (scripts 01–09) | **Done** |
+| Affordability dimension (Valores Unitarios del Suelo + Inside Airbnb) | **Done** |
 | Final GeoJSON + flat lookup | **Done**, in `data/output/` |
 | Frontend prototype (MapLibre choropleth + click-to-open profile panel) | **Done** — `frontend/`, see [`HACKATHON.md`](HACKATHON.md) |
 | Compare mode, Claude Q&A, layer toggles | TBD — Saturday build |
@@ -26,20 +27,25 @@ Pre-work brief: [`CLAUDE_CODE_BRIEF.md`](CLAUDE_CODE_BRIEF.md).
 │   ├── metrobus-en-vivo-spec.md     # Secondary project
 │   └── muevete-cdmx-spec.md         # Post-hackathon project
 ├── scripts/                    # Pre-processing pipeline
-│   ├── 01_download.py          # CKAN API → data/raw/ (~2.7 GB)
-│   ├── 02_build_base.py        # Normalise catálogo de colonias → colonia spine
-│   ├── 03_process_crime.py     # FGJ carpetas → crime features per colonia
-│   ├── 04_process_traffic.py   # SSC hechos de tránsito → per-colonia (point-in-polygon)
-│   ├── 05_process_transit.py   # Metro/Metrobús/STE/Ecobici + bike infra → per-colonia
-│   ├── 06_process_tabular.py   # Urban services, IDS, Censo, 0311 → per-colonia
-│   └── 07_compute_scores.py    # Sub-scores + overall, export GeoJSON + flat JSON
+│   ├── 01_download.py              # CKAN API → data/raw/ (~2.7 GB)
+│   ├── 02_build_base.py            # Normalise catálogo de colonias → colonia spine
+│   ├── 03_process_crime.py         # FGJ carpetas → crime features per colonia
+│   ├── 04_process_traffic.py       # SSC hechos de tránsito → per-colonia (point-in-polygon)
+│   ├── 05_process_transit.py       # Metro/Metrobús/STE/Ecobici + bike infra → per-colonia
+│   ├── 06_process_tabular.py       # Urban services, IDS, Censo, 0311 → per-colonia
+│   ├── 07_compute_scores.py        # Sub-scores + overall, export GeoJSON + flat JSON
+│   ├── 08_process_affordability.py # Valores Unitarios del Suelo → per-colonia MXN/m²
+│   └── 09_process_airbnb.py        # Inside Airbnb listings → per-colonia density / price
 ├── data/
 │   ├── raw/                    # (gitignored) Downloaded source datasets
 │   ├── processed/              # (gitignored) Intermediate tables
 │   └── output/
-│       ├── conoce_tu_colonia.geojson    # 13 MB, 1,543 features × ~67 props — the frontend's entire backend
-│       └── colonia_lookup.json          # 3.6 MB flat dict keyed by colonia_id — for Claude Q&A
-├── frontend/                   # (empty — Saturday build)
+│       ├── conoce_tu_colonia.geojson    # 1,543 features — the frontend's entire backend
+│       └── colonia_lookup.json          # Flat dict keyed by colonia_id — for Claude Q&A
+├── frontend/                   # Static MapLibre prototype (no build step)
+│   ├── index.html
+│   ├── app.js
+│   └── style.css
 ├── requirements.txt
 └── README.md
 ```
@@ -64,19 +70,26 @@ Each script is idempotent and prints sanity checks as it runs. The full
 pipeline takes ~10 minutes end-to-end on a laptop (dominated by script 01).
 
 ```bash
-python3 scripts/01_download.py          # ~8 min, ~2.7 GB download
-python3 scripts/02_build_base.py        # <10 s
-python3 scripts/03_process_crime.py     # ~30 s (2.1M FGJ rows)
-python3 scripts/04_process_traffic.py   # <10 s
-python3 scripts/05_process_transit.py   # ~20 s
-python3 scripts/06_process_tabular.py   # ~10 s
-python3 scripts/07_compute_scores.py    # <5 s
+python3 scripts/01_download.py              # ~8 min, ~2.7 GB download
+python3 scripts/02_build_base.py            # <10 s
+python3 scripts/03_process_crime.py         # ~30 s (2.1M FGJ rows)
+python3 scripts/04_process_traffic.py       # <10 s
+python3 scripts/05_process_transit.py       # ~20 s
+python3 scripts/06_process_tabular.py       # ~10 s
+python3 scripts/08_process_affordability.py # ~5 s (zonal land-value polygons)
+python3 scripts/09_process_airbnb.py        # ~10 s (Inside Airbnb snapshot)
+python3 scripts/07_compute_scores.py        # <5 s — must run last
 ```
 
 Selective runs: most scripts accept `--only <key>` or `--category <cat>`.
 See `scripts/01_download.py --list` for the full manifest.
 
-### Dataset not in the download manifest
+### Datasets not in the download manifest
+
+**Inside Airbnb CDMX snapshot** is required for `09_process_airbnb.py`. Grab
+the latest `listings.csv.gz` from <https://insideairbnb.com/get-the-data/>
+(Mexico City) and drop it at `data/raw/insideairbnb/listings.csv.gz`. They
+publish quarterly.
 
 **Metrobús GTFS static** is required for the secondary *Metrobús en Vivo*
 project but needs an API key registration at
@@ -114,8 +127,26 @@ each also with `_prior12mo` counterpart, plus `crime_trend_pct`,
 **Social + gov:** `ids_score`, `ids_stratum`, `alcaldia_population`,
 `s311_requests_2024`, `s311_top_complaint`.
 
+**Affordability — cadastral (Valores Unitarios del Suelo):**
+`land_value_mxn_per_m2` (area-weighted midpoint), `land_value_tier`
+(dominant of 5: Muy bajo → Muy alto), `land_value_coverage_pct`.
+
+**Affordability — short-term rental (Inside Airbnb):** total-supply view
+(`airbnb_listings_count`, `airbnb_density_per_km2`, `airbnb_median_price_mxn`,
+`airbnb_pct_entire_home`) and active-only view restricted to listings with
+a review in the last 12 months (`airbnb_active_count`,
+`airbnb_active_density_per_km2`, `airbnb_active_pct`). The two views serve
+different questions — see *Data decisions* below.
+
 **Scores (0–100, higher = better):** `score_safety`, `score_transit`,
-`score_urban`, `score_development`, `score_overall`.
+`score_urban`, `score_development`, `score_overall`, plus standalone
+`score_affordability` (not folded into `score_overall` — cost is good for
+renters, bad for owners; the UI lets the user weight it).
+
+For a worked walkthrough of how a sub-score is calculated — formula,
+design choices, three real colonias traced end-to-end, and the knobs
+to turn if you want to change behaviour — see
+[`docs/scoring.md`](docs/scoring.md).
 
 ## Data decisions and known limitations
 
@@ -138,6 +169,39 @@ spec. Some are forced by what the data actually contains.
   `LESIONES DOLOSAS`) but is coarse; `delito` has granular subtypes. We
   regex-tag both fields. Culposo (negligent) homicide is excluded from
   the violent/homicide tags.
+- **Safety-score denominator is `crime_street`, not total carpetas.**
+  `crime_street = total − fraud − domestic`. Fraud / extortion / identity
+  crimes get filed at corporate or contract addresses (which inflate
+  density in commercial colonias like Anzures and Centro), and domestic
+  violence happens at home — neither reflects pedestrian risk. The full
+  totals are still exposed in the schema for users who want them.
+- **Same-name polygon pairs share crime area-proportionally.** 19 colonia
+  ids in the spine resolve to two polygon parts (mostly peripheral
+  barrios plus Anzures). The crime aggregator now splits incident
+  counts by polygon area instead of dropping all crimes onto whichever
+  part the dict happened to keep last. Citywide totals are preserved.
+- **`score_overall` reweights across present dimensions.** When a
+  colonia is missing a sub-score (e.g. urban data unavailable), its
+  weight is redistributed across the remaining dimensions instead of
+  zero-filled. Previously a missing dimension cost 25 points for the
+  data gap alone.
+- **Affordability is a standalone score, not part of `score_overall`.**
+  Whether high MXN/m² is good or bad depends on whether you're buying or
+  renting. The UI surfaces it separately and lets the user filter.
+- **Two affordability signals on purpose.** Valores Unitarios is
+  cadastral and coarse (5 tiers — Doctores and Roma Norte land in the
+  same one). Inside Airbnb density is fine-grained and recent (Doctores:
+  117 listings/km² vs Roma Norte: 1,105/km²). Both are surfaced.
+- **Inside Airbnb filters: `price ≥ 100 MXN`, `min_nights ≤ 30`,
+  `availability_365 > 0`, price not null.** The price floor catches data
+  errors that show up as "MXN0/night" on IAB's public map (NaN rendered
+  as zero). Min-nights and availability filters drop stealth long-term
+  rentals and ghost listings with closed calendars.
+- **Active vs total Airbnb views.** ~19% of filtered listings have zero
+  reviews in the last 12 months. Total-count is the better proxy for
+  Airbnb-ification *pressure* on the long-term rental pool (zombie
+  listings still withhold a unit); active-count is the better proxy for
+  actual tourist activity.
 - **Urban SHPs use IECM's electoral colonia definition**, which subdivides
   large central colonias (e.g. `CENTRO I / II / III`) with codes that
   don't match the catálogo. We spatial-join SHP polygon centroids to the
