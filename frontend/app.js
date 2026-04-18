@@ -137,7 +137,7 @@ map.on("load", async () => {
   FEATURES = data.features;
 
   document.getElementById("colonia-count").textContent =
-    `${FEATURES.length.toLocaleString("es-MX")} colonias · 76 indicadores`;
+    `${FEATURES.length.toLocaleString("es-MX")} colonias · 83 indicadores`;
 
   map.addSource("colonias", {
     type: "geojson",
@@ -444,20 +444,52 @@ function barRow(name, score) {
 
 function affordabilityRow(p) {
   const v = p.land_value_mxn_per_m2;
-  if (v === null || v === undefined || Number.isNaN(v)) {
-    return `<p class="footer-note" style="margin-top:8px">
-      Valor de suelo: sin datos (fuera del mapa catastral urbano).
-    </p>`;
+  const rows = [];
+
+  if (v !== null && v !== undefined && !Number.isNaN(v)) {
+    const tier = p.land_value_tier ? ` · ${escapeHtml(p.land_value_tier)}` : "";
+    const cov = p.land_value_coverage_pct;
+    const covNote = cov !== null && cov !== undefined && cov < 95
+      ? ` <span class="muted">(cobertura ${fmtNum(cov, 0)}%)</span>`
+      : "";
+    rows.push(`
+      <div class="k">Valor de suelo (Código Fiscal)</div>
+      <div class="v">$${fmtNum(v)} / m²${tier}${covNote}</div>
+    `);
+  } else {
+    rows.push(`
+      <div class="k">Valor de suelo (Código Fiscal)</div>
+      <div class="v muted">sin datos</div>
+    `);
   }
-  const tier = p.land_value_tier ? ` · ${escapeHtml(p.land_value_tier)}` : "";
-  const cov = p.land_value_coverage_pct;
-  const covNote = cov !== null && cov !== undefined && cov < 95
-    ? ` <span class="muted">(cobertura ${fmtNum(cov, 0)}%)</span>`
-    : "";
-  return `<div class="kv" style="margin-top:8px">
-    <div class="k">Valor de suelo (Código Fiscal)</div>
-    <div class="v">$${fmtNum(v)} / m²${tier}${covNote}</div>
-  </div>`;
+
+  const listings = p.airbnb_listings_count;
+  if (listings !== null && listings !== undefined && listings > 0) {
+    const median = p.airbnb_median_nightly_mxn;
+    const p25 = p.airbnb_p25_nightly_mxn;
+    const p75 = p.airbnb_p75_nightly_mxn;
+    const density = p.airbnb_density_per_km2;
+    const entire = p.airbnb_entire_home_pct;
+    const range = (p25 && p75) ? ` <span class="muted">($${fmtNum(p25)}–$${fmtNum(p75)})</span>` : "";
+    rows.push(`
+      <div class="k">Airbnb · mediana noche</div>
+      <div class="v">$${fmtNum(median)} MXN${range}</div>
+    `);
+    rows.push(`
+      <div class="k">Airbnb · densidad</div>
+      <div class="v">${fmtNum(listings)} listings (${fmtNum(density, 0)} / km²)</div>
+    `);
+    rows.push(`
+      <div class="k">Airbnb · casa entera</div>
+      <div class="v">${fmtPct(entire, 0)}</div>
+    `);
+  }
+
+  return `<div class="kv" style="margin-top:8px">${rows.join("")}</div>
+    <p class="footer-note" style="margin-top:6px">
+      Asequibilidad: percentil invertido del valor unitario de suelo (Código Fiscal CDMX,
+      5 tramos) ${listings > 0 ? "· Airbnb Inside (snapshot sep 2025)" : ""}.
+    </p>`;
 }
 
 function simpleBar(name, val, suffix) {

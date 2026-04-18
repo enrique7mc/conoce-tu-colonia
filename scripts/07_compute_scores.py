@@ -157,14 +157,20 @@ def main() -> int:
     tabular = pd.read_csv(PROCESSED / "tabular_by_colonia.csv")
     afford_path = PROCESSED / "affordability_by_colonia.csv"
     afford = pd.read_csv(afford_path) if afford_path.exists() else None
+    airbnb_path = PROCESSED / "airbnb_by_colonia.csv"
+    airbnb = pd.read_csv(airbnb_path) if airbnb_path.exists() else None
     print(f"  spine   : {len(base)} colonias, area total {base['area_m2'].sum()/1e6:.1f} km²")
     if afford is None:
         print("  !! affordability_by_colonia.csv missing — score_affordability will be NaN")
+    if airbnb is None:
+        print("  !! airbnb_by_colonia.csv missing — airbnb_* fields will be NaN")
 
     # Drop redundant identifier columns from each feature table.
     feature_tables = [crime, traffic, transit, tabular]
     if afford is not None:
         feature_tables.append(afford)
+    if airbnb is not None:
+        feature_tables.append(airbnb)
     for df in feature_tables:
         drop = [c for c in ("colonia_name", "alcaldia_name", "alcaldia_id")
                 if c in df.columns]
@@ -184,6 +190,13 @@ def main() -> int:
         full["land_value_mxn_per_m2"] = np.nan
         full["land_value_tier"] = None
         full["land_value_coverage_pct"] = 0.0
+    if airbnb is not None:
+        full = full.merge(airbnb, on="colonia_id", how="left")
+    else:
+        for c in ("airbnb_listings_count", "airbnb_density_per_km2",
+                  "airbnb_median_nightly_mxn", "airbnb_p25_nightly_mxn",
+                  "airbnb_p75_nightly_mxn", "airbnb_entire_home_pct"):
+            full[c] = np.nan
     print(f"  merged  : {len(full)} rows, {len(full.columns)} columns")
 
     # --- scores ---
