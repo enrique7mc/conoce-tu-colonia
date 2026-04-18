@@ -22,13 +22,17 @@ All sub-scores are 0-100 where higher = better.
 
 * safety_score
     Combined percentile-rank of:
-      - total-crime density    (count / km²)  weight 0.4
+      - street-crime density   (count / km²)  weight 0.4
       - violent-crime density  (count / km²)  weight 0.6
     Inverted so low crime -> high score.
     Percentile rank is robust to outliers and the "delito de bajo impacto"
     dominating the absolute counts.  Violent density carries more weight
     so severity isn't drowned out by volume.  Colonias with zero density
     still get ranked, they just tie at percentile 0.
+    "Street" excludes fraud/extortion/identity + domestic violence:
+    those get filed at corporate or home addresses and inflate density
+    in dense commercial colonias (Anzures, Juárez, Polanco) without
+    reflecting pedestrian risk.
 
 * transit_score
     Weighted composite:
@@ -59,7 +63,11 @@ All sub-scores are 0-100 where higher = better.
     Deliberately NOT mixed into score_overall — affordability is good for
     renters, bad for owners; exposed as a standalone dimension + filter.
 
-* score_overall = 0.35*safety + 0.25*transit + 0.25*urban + 0.15*development
+* score_overall = weighted mean of the four dimensions with target weights
+    safety 0.35, transit 0.25, urban 0.25, development 0.15.  If a
+    dimension is NaN (e.g. no ``Servicios urbanos`` coverage for the
+    colonia), its weight is redistributed across the present dimensions
+    — a missing dimension does not drag the overall toward zero.
 
 Run:
     python3 scripts/07_compute_scores.py
@@ -96,11 +104,15 @@ def invert_distance_score(dist_m: pd.Series, near_m: float = 150, far_m: float =
 
 
 def safety_score(crime: pd.DataFrame, area_km2: pd.Series) -> pd.Series:
-    total_density = crime["crime_total_last12mo"] / area_km2
+    # ``crime_street`` = total − fraud − domestic.  Fraud/extortion/identity
+    # cases are filed at corporate or contract addresses, and domestic
+    # violence happens at home — neither reflects pedestrian street risk,
+    # so excluding both gives a cleaner denominator.
+    street_density = crime["crime_street_last12mo"] / area_km2
     violent_density = crime["crime_violent_last12mo"] / area_km2
-    total_rank = pct_rank(total_density).fillna(0)
+    street_rank = pct_rank(street_density).fillna(0)
     violent_rank = pct_rank(violent_density).fillna(0)
-    composite = 0.4 * total_rank + 0.6 * violent_rank
+    composite = 0.4 * street_rank + 0.6 * violent_rank
     return ((1 - composite) * 100).round(1)
 
 
@@ -211,11 +223,22 @@ def main() -> int:
     full["score_development"] = development_score(full["ids_score"])
     full["score_affordability"] = affordability_score(full["land_value_mxn_per_m2"])
 
+    # Missing dimensions (e.g. no ``Servicios urbanos`` coverage) have their
+    # weight redistributed across present ones rather than zero-filled.
+    # Without this, Anzures — which lacks urban data — loses a full 25
+    # points just for the gap and sinks from ~45 to ~34.
+    weights = pd.Series({
+        "score_safety":      0.35,
+        "score_transit":     0.25,
+        "score_urban":       0.25,
+        "score_development": 0.15,
+    })
+    dims = full[weights.index]
+    present = dims.notna()
+    weighted_sum = (dims.fillna(0) * weights).sum(axis=1)
+    weight_sum = (present * weights).sum(axis=1)
     full["score_overall"] = (
-        0.35 * full["score_safety"].fillna(50)
-        + 0.25 * full["score_transit"].fillna(0)
-        + 0.25 * full["score_urban"].fillna(0)
-        + 0.15 * full["score_development"].fillna(50)
+        weighted_sum / weight_sum.where(weight_sum > 0)
     ).round(1)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)

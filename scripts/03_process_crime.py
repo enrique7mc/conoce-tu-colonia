@@ -24,6 +24,13 @@ Design notes
   ~81% of all rows, so ``crime_total`` is dominated by low-impact entries;
   use ``crime_violent`` or the specific tag columns for severity-weighted
   scoring.
+* ``street`` is the non-overlapping complement of ``fraud`` ∪ ``domestic``.
+  Fraud/extortion/identity cases are filed at corporate or contract
+  addresses rather than where the victim lives, which artificially
+  inflates crime density in commercial colonias (Anzures, Juárez,
+  Polanco).  Domestic violence is a home-based offense, not a signal of
+  street risk.  ``crime_street`` is what the safety score consumes so
+  the headline "is this area safe to walk?" isn't polluted by either.
 
 Run:
     python3 scripts/03_process_crime.py
@@ -88,9 +95,27 @@ def norm_alc(s) -> str | None:
 
 
 def build_spine_lookups(base: gpd.GeoDataFrame) -> tuple[dict, dict]:
+    """Return (pair_to_members, unique_to_id).
+
+    ``pair_to_members`` maps (alcaldía, colonia_name) -> list of
+    (colonia_id, area_m2).  The list has >1 entry only for the ~19
+    same-name polygon pairs in the spine (most are in peripheral
+    alcaldías: Milpa Alta, Xochimilco, Tláhuac; plus Anzures and a few
+    others).  FGJ ``colonia_catalogo`` is just a name string with no
+    sub-polygon key, so crimes hitting a multi-member pair get split
+    proportionally by area at resolution time — better than the prior
+    dict-overwrite behaviour where all rows landed on one polygon and
+    the siblings showed zero crime.
+    """
     alc_key = base["alcaldia_name"].map(norm_alc)
     col_key = base["colonia_name"].str.strip()
-    pair_to_id = dict(zip(zip(alc_key, col_key), base["colonia_id"]))
+    scratch = pd.DataFrame({
+        "alc": alc_key.values, "col": col_key.values,
+        "id": base["colonia_id"].values, "area": base["area_m2"].values,
+    })
+    pair_to_members: dict[tuple, list[tuple]] = {}
+    for (a, c), grp in scratch.groupby(["alc", "col"], sort=False):
+        pair_to_members[(a, c)] = list(zip(grp["id"], grp["area"]))
     # Unique-name fallback: only colonias whose name is unique citywide.
     counts = col_key.value_counts()
     unique_names = counts[counts == 1].index
@@ -99,17 +124,69 @@ def build_spine_lookups(base: gpd.GeoDataFrame) -> tuple[dict, dict]:
             .loc[unique_names, "colonia_id"]
             .to_dict()
     )
-    return pair_to_id, unique_to_id
+    return pair_to_members, unique_to_id
 
 
-def resolve_colonia_ids(df: pd.DataFrame, pair_to_id, unique_to_id) -> pd.Series:
-    alc = df["alcaldia_hecho"].map(norm_alc)
-    col = df["colonia_catalogo"].astype("string").str.strip()
-    keys = list(zip(alc, col))
-    ids = pd.Series([pair_to_id.get(k) for k in keys], index=df.index, dtype="object")
-    miss = ids.isna() & col.notna()
-    ids.loc[miss] = col.loc[miss].map(unique_to_id)
-    return ids
+def resolve_colonia_ids(
+    df: pd.DataFrame, pair_to_members: dict, unique_to_id: dict
+) -> pd.DataFrame:
+    """Add ``colonia_id`` + ``weight`` columns; expand ambiguous rows.
+
+    For a FGJ row whose (alcaldía, colonia) key resolves to a single
+    spine polygon, the original row stays intact with weight 1.0.  For
+    rows that resolve to N same-name polygons (e.g. Anzures × 2), the
+    row is duplicated N times with area-weighted fractional weights
+    summing to 1.0, so the crime count is conserved citywide but shared
+    across candidate polygons.  Area is a fallback — per-colonia
+    population would be more accurate but isn't in the spine.
+    """
+    alc = df["alcaldia_hecho"].map(norm_alc).to_numpy()
+    col = df["colonia_catalogo"].astype("string").str.strip().to_numpy(
+        na_value=None
+    )
+
+    assigned_ids: list = [None] * len(df)
+    weights = np.zeros(len(df), dtype=float)
+    expand_rows: list[tuple[int, list]] = []
+
+    for i in range(len(df)):
+        c = col[i]
+        if c is None:
+            continue
+        members = pair_to_members.get((alc[i], c))
+        if members:
+            if len(members) == 1:
+                assigned_ids[i] = members[0][0]
+                weights[i] = 1.0
+            else:
+                expand_rows.append((i, members))
+        else:
+            uid = unique_to_id.get(c)
+            if uid is not None:
+                assigned_ids[i] = uid
+                weights[i] = 1.0
+
+    df = df.copy()
+    df["colonia_id"] = assigned_ids
+    df["weight"] = weights
+
+    if expand_rows:
+        src_idx = [i for i, _ in expand_rows]
+        repeats = [len(m) for _, m in expand_rows]
+        expanded = df.iloc[src_idx].loc[
+            df.iloc[src_idx].index.repeat(repeats)
+        ].reset_index(drop=True)
+        flat_ids, flat_weights = [], []
+        for _, members in expand_rows:
+            total = sum(a for _, a in members) or 1.0
+            for cid, area in members:
+                flat_ids.append(cid)
+                flat_weights.append(area / total)
+        expanded["colonia_id"] = flat_ids
+        expanded["weight"] = flat_weights
+        df = pd.concat([df, expanded], ignore_index=True)
+
+    return df
 
 
 def tag_by_category(delito: pd.Series, categoria: pd.Series) -> pd.DataFrame:
@@ -131,16 +208,28 @@ def tag_by_category(delito: pd.Series, categoria: pd.Series) -> pd.DataFrame:
     for tag, pattern in TAG_RULES.items():
         per_cat = cat_names.str.contains(pattern, regex=True, na=False).to_numpy()
         out[f"tag_{tag}"] = per_cat[codes].astype(np.uint8)
+    # Street-level complement: carpetas that aren't fraud and aren't domestic.
+    # These two buckets are geographically misleading (filed at corporate or
+    # home addresses), so excluding them gives a cleaner denominator for
+    # "pedestrian safety" density.
+    out["tag_street"] = (1 - ((out["tag_fraud"] | out["tag_domestic"]))).astype(np.uint8)
     return pd.DataFrame(out)
 
 
 def aggregate_window(df: pd.DataFrame, lo, hi, suffix: str) -> pd.DataFrame:
     mask = (df["fecha_inicio"] >= lo) & (df["fecha_inicio"] < hi) & df["colonia_id"].notna()
-    sub = df.loc[mask]
-    agg_cols = {"total": ("delito", "size")}
-    for c in sub.columns:
-        if c.startswith("tag_"):
-            agg_cols[c[len("tag_"):]] = (c, "sum")
+    sub = df.loc[mask].copy()
+    # Each FGJ row carries a weight (1.0 for unambiguous, fractional for
+    # same-name expansions).  Multiply tag flags by weight so aggregation
+    # conserves total crime count while sharing ambiguous rows across
+    # sibling polygons.
+    w = sub["weight"].to_numpy()
+    tag_cols = [c for c in sub.columns if c.startswith("tag_")]
+    for c in tag_cols:
+        sub[c] = sub[c].to_numpy() * w
+    agg_cols = {"total": ("weight", "sum")}
+    for c in tag_cols:
+        agg_cols[c[len("tag_"):]] = (c, "sum")
     grouped = sub.groupby("colonia_id").agg(**agg_cols)
     grouped.columns = [f"crime_{c}_{suffix}" for c in grouped.columns]
     return grouped
@@ -149,9 +238,12 @@ def aggregate_window(df: pd.DataFrame, lo, hi, suffix: str) -> pd.DataFrame:
 def main() -> int:
     print("loading spine ...")
     base = gpd.read_file(SPINE)
-    pair_to_id, unique_to_id = build_spine_lookups(base)
-    print(f"  spine        : {len(base):,} colonias")
-    print(f"  unique names : {len(unique_to_id):,}  (available for fallback)")
+    pair_to_members, unique_to_id = build_spine_lookups(base)
+    ambiguous_pairs = {k: v for k, v in pair_to_members.items() if len(v) > 1}
+    print(f"  spine            : {len(base):,} colonias")
+    print(f"  unique names     : {len(unique_to_id):,}  (available for fallback)")
+    print(f"  ambiguous pairs  : {len(ambiguous_pairs):,}  "
+          f"(same-name polygons share crime by area weight)")
 
     print("loading carpetas ...")
     df = pd.read_csv(RAW, usecols=READ_COLUMNS, low_memory=False)
@@ -167,13 +259,15 @@ def main() -> int:
     print(f"  prior 12mo : [{prior12.date()}, {last12.date()})")
 
     print("resolving colonia IDs ...")
-    df["colonia_id"] = resolve_colonia_ids(df, pair_to_id, unique_to_id)
-    resolved = df["colonia_id"].notna()
-    null_col = df["colonia_catalogo"].isna()
-    print(f"  resolved   : {resolved.sum():,} / {len(df):,}  "
-          f"({resolved.mean()*100:.1f}%)")
-    print(f"  null colonia_catalogo : {null_col.sum():,}")
-    print(f"  unmatched name        : {(~resolved & ~null_col).sum():,}")
+    original_len = len(df)
+    df = resolve_colonia_ids(df, pair_to_members, unique_to_id)
+    resolved_weight = df.loc[df["colonia_id"].notna(), "weight"].sum()
+    null_col = df["colonia_catalogo"].isna().sum()
+    expanded = len(df) - original_len
+    print(f"  resolved (row-equivalent) : {resolved_weight:,.0f} / "
+          f"{original_len:,}  ({resolved_weight/original_len*100:.1f}%)")
+    print(f"  null colonia_catalogo     : {null_col:,}")
+    print(f"  rows expanded for ambiguity: +{expanded:,}")
 
     print("tagging delito categories ...")
     df = pd.concat(
@@ -199,7 +293,9 @@ def main() -> int:
     spine_cols = base[["colonia_id", "colonia_name", "alcaldia_name"]].set_index("colonia_id")
     full = spine_cols.join(joined, how="left")
     zero_cols = [c for c in full.columns if c.startswith("crime_") and c != "crime_trend_pct"]
-    full[zero_cols] = full[zero_cols].fillna(0).astype(int)
+    # Round before int-cast: weighted splits can produce fractional counts
+    # for same-name polygons; truncation would bias low.
+    full[zero_cols] = full[zero_cols].fillna(0).round(0).astype(int)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     full.to_csv(OUT)
@@ -210,6 +306,8 @@ def main() -> int:
     print(f"colonias in output         : {len(full):,}")
     print(f"colonias with 0 crime l12m : {(full['crime_total_last12mo'] == 0).sum():,}")
     print(f"citywide crime l12m        : {full['crime_total_last12mo'].sum():,}")
+    print(f"citywide street l12m       : {full['crime_street_last12mo'].sum():,}  "
+          f"(= total − fraud − domestic)")
     print(f"citywide violent l12m      : {full['crime_violent_last12mo'].sum():,}")
     print(f"citywide homicide l12m     : {full['crime_homicide_last12mo'].sum():,}")
     print(f"citywide sexual l12m       : {full['crime_sexual_last12mo'].sum():,}")
