@@ -7,12 +7,27 @@ strong correlate of "tourist pressure" and Airbnb-ification — the second
 axis of the affordability story (the first being cadastral land value).
 
 Filters applied before aggregation:
+    * price not null      (drops listings where Inside Airbnb couldn't
+                           resolve a price — ~13% of raw rows, shown as
+                           "MXN0/night" on the public IAB map)
+    * price >= 100 MXN    (drops obvious data errors — nightly rates
+                           below ~$5 USD aren't plausible for CDMX)
     * minimum_nights <= 30   (exclude stealth long-term rentals)
-    * availability_365 > 0   (exclude ghost listings)
-    * price not null
+    * availability_365 > 0   (exclude ghost listings with closed
+                              calendars)
 
 The price field ships as a currency string ("$3,673.00"); we strip the
 symbol and commas.
+
+``airbnb_active_*`` mirrors the "all listings" columns but restricts to
+listings with ``number_of_reviews_ltm > 0`` — i.e. that actually rented
+at least once in the last 12 months.  Two views exist on purpose:
+
+  * ``airbnb_listings_count`` / ``_density_per_km2`` — total supply.
+    Good proxy for Airbnb-ification *pressure* on housing (zombie
+    listings still withhold a unit from the long-term rental pool).
+  * ``airbnb_active_count`` / ``_active_density_per_km2`` — real
+    tourist activity.  Good for "how touristed is this area".
 
 Output
 ------
@@ -21,6 +36,9 @@ Output
         colonia_id
         airbnb_listings_count              int
         airbnb_density_per_km2             float  (listings / km²)
+        airbnb_active_count                int    (reviews_ltm > 0)
+        airbnb_active_density_per_km2      float  (active / km²)
+        airbnb_active_pct                  float  (active / total × 100)
         airbnb_median_nightly_mxn          float
         airbnb_p25_nightly_mxn             float  (affordable end)
         airbnb_p75_nightly_mxn             float  (premium end)
@@ -83,22 +101,28 @@ def main() -> int:
         usecols=[
             "id", "latitude", "longitude", "price", "room_type",
             "minimum_nights", "availability_365",
+            "number_of_reviews_ltm",
         ],
         low_memory=False,
     )
     print(f"  {len(df):,} raw listings")
 
     df["price_mxn"] = parse_price(df["price"])
+    df["reviews_ltm"] = df["number_of_reviews_ltm"].fillna(0).astype(int)
     before = len(df)
     df = df[
         (df["price_mxn"].notna())
+        & (df["price_mxn"] >= 100)  # drop data errors (~9 rows under ~$5 USD)
         & (df["minimum_nights"] <= 30)
         & (df["availability_365"] > 0)
         & (df["latitude"].notna())
         & (df["longitude"].notna())
     ].copy()
     print(f"  kept {len(df):,}/{before:,} after filters "
-          f"(price + min_nights<=30 + availability>0)")
+          f"(price>=100 + min_nights<=30 + availability>0)")
+    active_n = (df["reviews_ltm"] > 0).sum()
+    print(f"  of which active (reviews_ltm>0): {active_n:,} "
+          f"({active_n/len(df)*100:.1f}%)")
 
     print("loading spine ...")
     spine = gpd.read_file(SPINE_PATH)[
@@ -108,7 +132,7 @@ def main() -> int:
 
     print("spatial join ...")
     pts = gpd.GeoDataFrame(
-        df[["id", "price_mxn", "room_type"]],
+        df[["id", "price_mxn", "room_type", "reviews_ltm"]],
         geometry=gpd.points_from_xy(df["longitude"], df["latitude"]),
         crs="EPSG:4326",
     ).to_crs(METRIC_CRS)
@@ -119,9 +143,11 @@ def main() -> int:
     print(f"  {len(joined):,} listings matched a colonia "
           f"({len(joined)/len(df)*100:.1f}% of filtered)")
 
+    joined["_is_active"] = (joined["reviews_ltm"] > 0).astype(int)
     grp = joined.groupby("colonia_id", as_index=False)
     out = grp.agg(
         airbnb_listings_count=("id", "count"),
+        airbnb_active_count=("_is_active", "sum"),
         airbnb_median_nightly_mxn=("price_mxn", "median"),
         airbnb_p25_nightly_mxn=("price_mxn", lambda s: s.quantile(0.25)),
         airbnb_p75_nightly_mxn=("price_mxn", lambda s: s.quantile(0.75)),
@@ -131,9 +157,16 @@ def main() -> int:
         ),
         _col_area_m2=("area_m2", "first"),
     )
+    km2 = out["_col_area_m2"] / 1e6
     out["airbnb_density_per_km2"] = (
-        out["airbnb_listings_count"] / (out["_col_area_m2"] / 1e6)
+        out["airbnb_listings_count"] / km2
     ).round(2)
+    out["airbnb_active_density_per_km2"] = (
+        out["airbnb_active_count"] / km2
+    ).round(2)
+    out["airbnb_active_pct"] = (
+        out["airbnb_active_count"] / out["airbnb_listings_count"] * 100
+    ).round(1)
     out = out.drop(columns="_col_area_m2")
 
     for c in ("airbnb_median_nightly_mxn",
@@ -152,6 +185,8 @@ def main() -> int:
                 pad[col] = pd.NA
         pad["airbnb_listings_count"] = 0
         pad["airbnb_density_per_km2"] = 0.0
+        pad["airbnb_active_count"] = 0
+        pad["airbnb_active_density_per_km2"] = 0.0
         out = pd.concat([out, pad], ignore_index=True)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -164,7 +199,8 @@ def main() -> int:
     with_data = out[out["airbnb_listings_count"] > 0]
     print(f"  colonias with ≥1 listing: {len(with_data):,}/{len(out):,} "
           f"({len(with_data)/len(out)*100:.1f}%)")
-    print(f"  total listings: {out['airbnb_listings_count'].sum():,}")
+    print(f"  total listings (all)   : {out['airbnb_listings_count'].sum():,}")
+    print(f"  total listings (active): {out['airbnb_active_count'].sum():,}")
     print(f"  median listings per covered colonia: "
           f"{with_data['airbnb_listings_count'].median():.0f}")
     print(f"  median nightly MXN (across covered colonias): "
@@ -198,7 +234,9 @@ def main() -> int:
     if rows:
         spot = pd.DataFrame(rows)[[
             "colonia_name", "alcaldia_name",
-            "airbnb_listings_count", "airbnb_density_per_km2",
+            "airbnb_listings_count", "airbnb_active_count",
+            "airbnb_active_pct",
+            "airbnb_density_per_km2", "airbnb_active_density_per_km2",
             "airbnb_median_nightly_mxn", "airbnb_p25_nightly_mxn",
             "airbnb_p75_nightly_mxn", "airbnb_entire_home_pct",
         ]]

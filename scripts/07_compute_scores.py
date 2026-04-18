@@ -206,6 +206,8 @@ def main() -> int:
         full = full.merge(airbnb, on="colonia_id", how="left")
     else:
         for c in ("airbnb_listings_count", "airbnb_density_per_km2",
+                  "airbnb_active_count", "airbnb_active_density_per_km2",
+                  "airbnb_active_pct",
                   "airbnb_median_nightly_mxn", "airbnb_p25_nightly_mxn",
                   "airbnb_p75_nightly_mxn", "airbnb_entire_home_pct"):
             full[c] = np.nan
