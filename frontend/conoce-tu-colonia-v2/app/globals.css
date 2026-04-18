@@ -1,0 +1,22 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #05080c;
+  font-family: -apple-system, system-ui, sans-serif;
+  color: #e7edf5;
+  overflow: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  font-family: inherit;
+}
+
+input[type='range'] {
+  accent-color: #7cc4ff;
+}
